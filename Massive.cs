@@ -108,9 +108,10 @@ namespace Massive {
     /// <summary>
     /// A class that wraps your database table in Dynamic Funtime
     /// </summary>
-    public class DynamicModel : DynamicObject {
+    public class DynamicModel : DynamicObject, IDisposable {
         DbProviderFactory _factory;
         string ConnectionString;
+	    DbConnection connection;
         public static DynamicModel Open(string connectionStringName) {
             dynamic dm = new DynamicModel(connectionStringName);
             return dm;
@@ -196,11 +197,9 @@ namespace Massive {
         /// Enumerates the reader yielding the result - thanks to Jeroen Haegebaert
         /// </summary>
         public virtual IEnumerable<dynamic> Query(string sql, params object[] args) {
-            using (var conn = OpenConnection()) {
-                var rdr = CreateCommand(sql, conn, args).ExecuteReader();
-                while (rdr.Read()) {
-                    yield return rdr.RecordToExpando(); ;
-                }
+            var rdr = CreateCommand(sql, GetConnection(), args).ExecuteReader();
+            while (rdr.Read()) {
+                yield return rdr.RecordToExpando(); ;
             }
         }
         public virtual IEnumerable<dynamic> Query(string sql, DbConnection connection, params object[] args) {
@@ -214,11 +213,7 @@ namespace Massive {
         /// Returns a single result
         /// </summary>
         public virtual object Scalar(string sql, params object[] args) {
-            object result = null;
-            using (var conn = OpenConnection()) {
-                result = CreateCommand(sql, conn, args).ExecuteScalar();
-            }
-            return result;
+            return CreateCommand(sql, GetConnection(), args).ExecuteScalar();
         }
         /// <summary>
         /// Creates a DBCommand that you can use for loving your database.
@@ -231,14 +226,21 @@ namespace Massive {
                 result.AddParams(args);
             return result;
         }
+
+
+
         /// <summary>
         /// Returns and OpenConnection
         /// </summary>
-        public virtual DbConnection OpenConnection() {
-            var result = _factory.CreateConnection();
-            result.ConnectionString = ConnectionString;
-            result.Open();
-            return result;
+        public virtual DbConnection GetConnection()
+        {
+	        if (connection != null)
+		        return connection;
+
+            connection = _factory.CreateConnection();
+			connection.ConnectionString = ConnectionString;
+			connection.Open();
+			return connection;
         }
         /// <summary>
         /// Builds a set of Insert and Update commands based on the passed-on objects.
@@ -270,15 +272,9 @@ namespace Massive {
         /// </summary>
         public virtual int Execute(IEnumerable<DbCommand> commands) {
             var result = 0;
-            using (var conn = OpenConnection()) {
-                using (var tx = conn.BeginTransaction()) {
-                    foreach (var cmd in commands) {
-                        cmd.Connection = conn;
-                        cmd.Transaction = tx;
-                        result += cmd.ExecuteNonQuery();
-                    }
-                    tx.Commit();
-                }
+            foreach (var cmd in commands) {
+                cmd.Connection = GetConnection();
+                result += cmd.ExecuteNonQuery();
             }
             return result;
         }
@@ -544,14 +540,12 @@ namespace Massive {
                 throw new InvalidOperationException("Can't insert: " + String.Join("; ", Errors.ToArray()));
             }
             if (BeforeSave(ex)) {
-                using (dynamic conn = OpenConnection()) {
-                    var cmd = CreateInsertCommand(ex);
-                    cmd.Connection = conn;
-                    cmd.ExecuteNonQuery();
-                    cmd.CommandText = "SELECT SCOPE_IDENTITY() as newID";
-                    ex.ID = cmd.ExecuteScalar();
-                    Inserted(ex);
-                }
+                var cmd = CreateInsertCommand(ex);
+                cmd.Connection = GetConnection();
+                cmd.ExecuteNonQuery();
+                cmd.CommandText = "SELECT SCOPE_IDENTITY() as newID";
+                ex.ID = cmd.ExecuteScalar();
+                Inserted(ex);
                 return ex;
             } else {
                 return null;
@@ -740,5 +734,13 @@ namespace Massive {
             }
             return true;
         }
+
+	    public void Dispose()
+	    {
+		    if (connection != null) {
+			    connection.Dispose();
+			    connection = null;
+		    }
+	    }
     }
 }
